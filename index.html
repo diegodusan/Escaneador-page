@@ -141,36 +141,23 @@
         .nota { color: var(--gris); font-size: .88rem; margin-top: 40px; max-width: 62ch }
         .vacio { color: var(--gris); font-size: .95rem; padding: 12px 2px }
 
-        /* Contenedor donde docx-preview maqueta el Word. Invisible pero con layout real. */
-        .docx-host {
-            position: absolute; left: 0; top: 0; z-index: -1;
-            opacity: 0; pointer-events: none;
-            background: #fff; color: #000;
-        }
-
-        .docx-host section.docx { margin: 0 0 24px 0 !important; box-shadow: none !important }
-
-        /* Modo diagnóstico: abre la página con ?depurar para ver la maquetación del Word */
-        .docx-host.depurar {
-            position: static; z-index: auto; opacity: 1; pointer-events: auto;
-            outline: 3px dashed var(--error); margin: 24px auto; width: max-content;
-        }
+        .nota code { font-size: .9em }
     </style>
 </head>
 
 <body>
     <main>
         <h1>Escáner PDF</h1>
-        <p class="intro">Convierte tus PDF y documentos Word en PDF con aspecto escaneado: escala de grises, contraste
-            de tóner, leve inclinación y grano de papel. Todo se procesa en tu navegador; los archivos no se suben a
-            ningún servidor.</p>
+        <p class="intro">Convierte tus PDF en PDF con aspecto escaneado: escala de grises, contraste de tóner, leve
+            inclinación y grano de papel. Todo se procesa en tu navegador; los archivos no se suben a ningún
+            servidor.</p>
 
-        <div class="cama" id="cama" tabindex="0" role="button" aria-label="Seleccionar PDF, Word o ZIP">
+        <div class="cama" id="cama" tabindex="0" role="button" aria-label="Seleccionar PDF o ZIP">
             <div class="barra-luz"></div>
-            <strong>Arrastra aquí tus PDF, Word (.docx) o ZIP</strong>
+            <strong>Arrastra aquí tus PDF o ZIP</strong>
             <span>o haz clic para elegirlos · puedes mezclar varios a la vez</span>
             <input type="file" id="entrada" multiple
-                accept=".pdf,.docx,.doc,.zip,application/pdf,application/zip,application/x-zip-compressed,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword">
+                accept=".pdf,.zip,application/pdf,application/zip,application/x-zip-compressed">
         </div>
 
         <fieldset>
@@ -199,24 +186,22 @@
             <li class="vacio">Aún no has agregado archivos.</li>
         </ul>
 
-        <p class="nota">Los Word se devuelven como PDF con el mismo nombre. Los ZIP se devuelven como un ZIP nuevo con
-            la misma estructura de carpetas; dentro, cada .docx se convierte en .pdf. El formato antiguo .doc no se
-            puede leer en el navegador: ábrelo en Word y guárdalo como .docx. Para una fidelidad idéntica a Word,
-            exporta primero el Word a PDF desde Word y escanea ese PDF. Funciona mejor en Chrome o Edge.</p>
+        <p class="nota">Cada PDF se devuelve con el mismo nombre. Los ZIP se devuelven como un ZIP nuevo con la misma
+            estructura de carpetas; los archivos que no son PDF se omiten. Si tienes documentos Word, guárdalos
+            primero como PDF desde Word (Archivo › Guardar como › PDF) y escanea ese PDF: así se conserva exactamente
+            el formato.</p>
     </main>
 
-    <!-- Librerías (builds UMD, versiones fijas). JSZip debe ir antes de docx-preview. html2canvas ya no se usa. -->
+    <!-- Librerías (builds UMD, versiones fijas) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.3/dist/docx-preview.min.js"></script>
     <script>
         "use strict";
 
         pdfjsLib.GlobalWorkerOptions.workerSrc =
             "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
-        const DEPURAR = new URLSearchParams(location.search).has("depurar");
 
         const $ = (id) => document.getElementById(id);
         const cama = $("cama"), entrada = $("entrada"), lista = $("lista");
@@ -230,10 +215,9 @@
         // Utilidades
         // ---------------------------------------------------------------------------
         const esPdf = (n) => /\.pdf$/i.test(n);
-        const esDocx = (n) => /\.docx$/i.test(n);
-        const esDoc = (n) => /\.doc$/i.test(n);
+        const esWord = (n) => /\.(docx|doc|docm|rtf)$/i.test(n);
         const esZip = (n) => /\.zip$/i.test(n);
-        const esConvertible = (n) => esPdf(n) || esDocx(n);
+
         const pausa = () => new Promise((r) => setTimeout(r, 0));
         const nombreBase = (n) => n.replace(/\.[^./]+$/, "");
         const aPdf = (n) => nombreBase(n) + ".pdf";
@@ -358,129 +342,6 @@
         }
 
         // ---------------------------------------------------------------------------
-        // DOCX -> páginas
-        // docx-preview maqueta el Word en HTML; luego el propio motor del navegador lo
-        // dibuja en un canvas mediante SVG <foreignObject>. Esto reemplaza a html2canvas,
-        // que reimplementa el CSS por su cuenta y perdía el cuerpo del documento.
-        // ---------------------------------------------------------------------------
-        function medirLongitud(valor, dentroDe) {
-            if (!valor) return 0;
-            const sonda = document.createElement("div");
-            sonda.style.cssText = "position:absolute;left:0;top:0;width:1px;visibility:hidden";
-            sonda.style.height = valor;
-            dentroDe.append(sonda);
-            const h = sonda.getBoundingClientRect().height;
-            sonda.remove();
-            return h;
-        }
-
-        function cargarImagen(url) {
-            return new Promise((res, rej) => {
-                const img = new Image();
-                img.onload = () => res(img);
-                img.onerror = () => rej(errorUsuario("El navegador no pudo dibujar la maquetación del Word"));
-                img.src = url;
-            });
-        }
-
-        async function capturarSeccion(sec, host, escala) {
-            const r = sec.getBoundingClientRect();
-            const ancho = Math.ceil(r.width);
-            const alto = Math.ceil(r.height);
-
-            // Contenedor autónomo: estilos de docx-preview + copia de la sección
-            const cont = document.createElement("div");
-            cont.style.cssText = `width:${ancho}px;height:${alto}px;margin:0;padding:0;background:#fff;color:#000;overflow:hidden`;
-            for (const st of host.querySelectorAll("style")) cont.append(st.cloneNode(true));
-            const clon = sec.cloneNode(true);
-            clon.style.setProperty("margin", "0", "important");
-            clon.style.setProperty("box-shadow", "none", "important");
-            cont.append(clon);
-
-            const xhtml = new XMLSerializer().serializeToString(cont);
-            const wPx = Math.round(ancho * escala), hPx = Math.round(alto * escala);
-            const svg =
-                `<svg xmlns="http://www.w3.org/2000/svg" width="${wPx}" height="${hPx}" viewBox="0 0 ${ancho} ${alto}">` +
-                `<foreignObject x="0" y="0" width="${ancho}" height="${alto}">${xhtml}</foreignObject></svg>`;
-
-            const img = await cargarImagen("data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg));
-
-            const c = document.createElement("canvas");
-            c.width = wPx; c.height = hPx;
-            const ctx = c.getContext("2d");
-            ctx.fillStyle = "#fff";
-            ctx.fillRect(0, 0, wPx, hPx);
-            ctx.drawImage(img, 0, 0, wPx, hPx);
-
-            // Algunos navegadores (p. ej. Safari) bloquean leer un canvas con foreignObject
-            try { ctx.getImageData(0, 0, 1, 1); }
-            catch { throw errorUsuario("Este navegador bloquea la captura del Word; usa Chrome o Edge"); }
-            return c;
-        }
-
-        async function* paginasDeDocx(bytes, dpi) {
-            const host = document.createElement("div");
-            host.className = "docx-host" + (DEPURAR ? " depurar" : "");
-            document.body.append(host);
-            try {
-                await docx.renderAsync(bytes, host, host, {
-                    className: "docx",
-                    inWrapper: false,
-                    ignoreWidth: false,
-                    ignoreHeight: false,
-                    ignoreFonts: false,
-                    breakPages: true,
-                    ignoreLastRenderedPageBreak: false,
-                    renderHeaders: true,
-                    renderFooters: true,
-                    renderFootnotes: true,
-                    renderEndnotes: true,
-                    useBase64URL: true, // imágenes como data: para que viajen dentro del SVG
-                });
-
-                if (document.fonts && document.fonts.ready) await document.fonts.ready;
-                await Promise.all([...host.querySelectorAll("img")].map((img) =>
-                    img.complete ? null : new Promise((r) => { img.onload = img.onerror = r; })
-                ));
-
-                const secciones = [...host.querySelectorAll("section.docx")];
-                if (secciones.length === 0) throw errorUsuario("El Word no generó páginas");
-
-                const plan = secciones.map((sec) => {
-                    const rect = sec.getBoundingClientRect();
-                    let altoPagina = medirLongitud(sec.style.minHeight || sec.style.height, host);
-                    if (!altoPagina) altoPagina = rect.width * (11 / 8.5); // respaldo: carta
-                    const n = Math.max(1, Math.ceil(rect.height / altoPagina - 0.02));
-                    return { sec, ancho: rect.width, altoPagina, n };
-                });
-                const total = plan.reduce((s, p) => s + p.n, 0);
-
-                const escala = dpi / 96; // 96 px CSS por pulgada
-                let indice = 0;
-                for (const { sec, ancho, altoPagina, n } of plan) {
-                    const captura = await capturarSeccion(sec, host, escala);
-                    const altoPx = Math.round(altoPagina * escala);
-                    for (let k = 0; k < n; k++) {
-                        const lienzo = document.createElement("canvas");
-                        lienzo.width = captura.width;
-                        lienzo.height = altoPx;
-                        const ctx = lienzo.getContext("2d");
-                        ctx.fillStyle = "#fff";
-                        ctx.fillRect(0, 0, lienzo.width, lienzo.height);
-                        const y0 = k * altoPx;
-                        const alto = Math.min(altoPx, captura.height - y0);
-                        if (alto > 0) ctx.drawImage(captura, 0, y0, captura.width, alto, 0, 0, captura.width, alto);
-                        indice++;
-                        yield { lienzo, ancho: ancho * 0.75, alto: altoPagina * 0.75, indice, total }; // 1 px = 0,75 pt
-                    }
-                    captura.width = captura.height = 0;
-                }
-            } finally {
-                if (!DEPURAR) host.remove();
-            }
-        }
-
-        // ---------------------------------------------------------------------------
         // Ensamblado del PDF escaneado
         // ---------------------------------------------------------------------------
         async function ensamblarPdf(paginas, opciones, alAvanzar) {
@@ -502,9 +363,8 @@
             return await salida.save();
         }
 
-        function escanearArchivo(nombre, bytes, opciones, alAvanzar) {
-            const fuente = esDocx(nombre) ? paginasDeDocx(bytes, opciones.dpi) : paginasDePdf(bytes, opciones.dpi);
-            return ensamblarPdf(fuente, opciones, alAvanzar);
+        function escanearArchivo(bytes, opciones, alAvanzar) {
+            return ensamblarPdf(paginasDePdf(bytes, opciones.dpi), opciones, alAvanzar);
         }
 
         // ---------------------------------------------------------------------------
@@ -516,7 +376,7 @@
 
         function agregarArchivos(archivos) {
             if (procesando) return;
-            const validos = [...archivos].filter((f) => esConvertible(f.name) || esZip(f.name) || esDoc(f.name));
+            const validos = [...archivos].filter((f) => esPdf(f.name) || esZip(f.name) || esWord(f.name));
             if (validos.length === 0) return;
             if (cola.length === 0) lista.innerHTML = "";
 
@@ -532,8 +392,8 @@
                 const job = { file, li, estadoEl: estado, resultado: null };
                 cola.push(job);
 
-                if (esDoc(file.name)) {
-                    ponerEstado(job, "Formato .doc no compatible: guárdalo como .docx", "error");
+                if (esWord(file.name)) {
+                    ponerEstado(job, "Es un Word: guárdalo como PDF desde Word y súbelo", "error");
                     job.resultado = { tipo: "error" };
                 } else {
                     ponerEstado(job, esZip(file.name) ? "ZIP en espera" : "En espera");
@@ -582,9 +442,7 @@
 
         async function procesarSuelto(job, opciones) {
             const bytes = new Uint8Array(await job.file.arrayBuffer());
-            if (esDocx(job.file.name)) ponerEstado(job, "Maquetando Word…");
-            const out = await escanearArchivo(job.file.name, bytes, opciones,
-                (i, t) => ponerEstado(job, `Página ${i}/${t}`));
+            const out = await escanearArchivo(bytes, opciones, (i, t) => ponerEstado(job, `Página ${i}/${t}`));
             const blob = new Blob([out], { type: "application/pdf" });
             const nombre = aPdf(job.file.name);
             job.resultado = { tipo: "pdf", blob, nombre };
@@ -595,19 +453,19 @@
             ponerEstado(job, "Leyendo ZIP…");
             const zip = await JSZip.loadAsync(job.file);
             const entradas = [];
-            let docsViejos = 0;
+            let wordsOmitidos = 0;
             zip.forEach((ruta, entrada) => {
                 const base = ruta.split("/").pop();
                 if (entrada.dir) return;
                 if (ruta.startsWith("__MACOSX/") || base.startsWith("._") || base.startsWith("~$")) return;
-                if (esDoc(base)) { docsViejos++; return; }
-                if (!esConvertible(base)) return;
+                if (esWord(base)) { wordsOmitidos++; return; }
+                if (!esPdf(base)) return;
                 entradas.push({ ruta, entrada });
             });
             entradas.sort((a, b) => a.ruta.localeCompare(b.ruta));
 
             if (entradas.length === 0) {
-                ponerEstado(job, docsViejos ? "Solo contiene .doc (no compatibles)" : "El ZIP no contiene PDF ni Word", "error");
+                ponerEstado(job, wordsOmitidos ? "El ZIP solo tiene Word: conviértelos a PDF primero" : "El ZIP no contiene PDF", "error");
                 job.resultado = { tipo: "vacio" };
                 return;
             }
@@ -619,8 +477,8 @@
                 const { ruta, entrada } = entradas[k];
                 try {
                     const datos = await entrada.async("uint8array");
-                    const out = await escanearArchivo(ruta, datos, opciones, (i, t) =>
-                        ponerEstado(job, `Archivo ${k + 1}/${entradas.length} · pág. ${i}/${t}`));
+                    const out = await escanearArchivo(datos, opciones,
+                        (i, t) => ponerEstado(job, `Archivo ${k + 1}/${entradas.length} · pág. ${i}/${t}`));
                     let destino = aPdf(ruta), n = 2;
                     while (usados.has(destino.toLowerCase())) destino = `${nombreBase(ruta)} (${n++}).pdf`;
                     usados.add(destino.toLowerCase());
@@ -644,7 +502,7 @@
             job.resultado = { tipo: "zip", blob, nombre };
             const partes = [`${ok} listos`];
             if (fallos) partes.push(`${fallos} con error`);
-            if (docsViejos) partes.push(`${docsViejos} .doc omitidos`);
+            if (wordsOmitidos) partes.push(`${wordsOmitidos} Word omitidos`);
             ponerDescarga(job, blob, nombre, partes.join(" · "));
         }
 
@@ -664,7 +522,7 @@
                     console.error(job.file.name, e);
                     const msg = e && e.name === "PasswordException"
                         ? "Protegido con contraseña"
-                        : (e && e.mensajeUsuario) || "Error: no se pudo leer el archivo";
+                        : (e && e.mensajeUsuario) || "Error: el PDF está dañado o no se pudo leer";
                     ponerEstado(job, msg, "error");
                     job.resultado = { tipo: "error" };
                 }
@@ -703,7 +561,6 @@
             urlsCreadas = [];
             cola = [];
             lista.innerHTML = "";
-            document.querySelectorAll(".docx-host").forEach((h) => h.remove());
             renderVacio();
             actualizarBotones();
         }
