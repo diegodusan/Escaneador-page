@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Escáner PDF — efecto escaneado en el navegador</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --vidrio: #E6ECEF;
+            /* fondo: vidrio del escáner */
+            --hoja: #FFFFFF;
+            --tinta: #1B2328;
+            --gris: #5F6B72;
+            --linea: #C9D3D8;
+            --luz: #1E9CBB;
+            /* luz de escaneo */
+            --ok: #2E7D4F;
+            --error: #B3261E;
+            box-sizing: border-box;
+            padding-top: env(safe-area-inset-top, 0px);
+            padding-bottom: env(safe-area-inset-bottom, 0px);
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root:not([data-theme="light"]) {
+                --vidrio: #161C20;
+                --hoja: #20282D;
+                --tinta: #E7ECEE;
+                --gris: #9AA7AE;
+                --linea: #34414A;
+                --luz: #4CC3E0;
+                --ok: #6CC592;
+                --error: #F08A82;
+            }
+        }
+
+        *,
+        *::before,
+        *::after {
+            box-sizing: inherit
+        }
+
+        html,
+        body {
+            margin: 0
+        }
+
+        body {
+            background: var(--vidrio);
+            color: var(--tinta);
+            font-family: "Archivo", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            font-size: 16px;
+            line-height: 1.5;
+        }
+
+        main {
+            max-width: 760px;
+            margin: 0 auto;
+            padding: 48px 20px 64px
+        }
+
+        h1 {
+            font-size: clamp(2rem, 6vw, 3.2rem);
+            font-weight: 800;
+            letter-spacing: -.02em;
+            line-height: 1.05;
+            margin: 0 0 12px
+        }
+
+        .intro {
+            color: var(--gris);
+            max-width: 60ch;
+            margin: 0 0 32px
+        }
+
+        /* Zona de carga: la "cama" del escáner */
+        .cama {
+            position: relative;
+            overflow: hidden;
+            background: var(--hoja);
+            border: 2px dashed var(--linea);
+            border-radius: 14px;
+            padding: 40px 24px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color .15s;
+        }
+
+        .cama:hover,
+        .cama.arrastrando {
+            border-color: var(--luz)
+        }
+
+        .cama:focus-visible {
+            outline: 3px solid var(--luz);
+            outline-offset: 3px
+        }
+
+        .cama strong {
+            display: block;
+            font-size: 1.15rem;
+            margin-bottom: 4px
+        }
+
+        .cama span {
+            color: var(--gris);
+            font-size: .95rem
+        }
+
+        .cama input {
+            display: none
+        }
+
+        .barra-luz {
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: 0;
+            height: 3px;
+            background: var(--luz);
+            box-shadow: 0 0 18px 4px var(--luz);
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .escaneando .barra-luz {
+            opacity: .85;
+            animation: barrido 1.8s ease-in-out infinite alternate
+        }
+
+        @keyframes barrido {
+            from {
+                top: 0
+            }
+
+            to {
+                top: calc(100% - 3px)
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .escaneando .barra-luz {
+                animation: none;
+                top: 50%
+            }
+        }
+
+        fieldset {
+            border: 0;
+            padding: 0;
+            margin: 28px 0 0;
+            display: grid;
+            gap: 16px 24px;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr))
+        }
+
+        legend {
+            font-weight: 700;
+            margin-bottom: 12px;
+            padding: 0
+        }
+
+        label.campo {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            font-size: .95rem
+        }
+
+        select,
+        input[type=number] {
+            font: inherit;
+            color: var(--tinta);
+            background: var(--hoja);
+            border: 1px solid var(--linea);
+            border-radius: 8px;
+            padding: 8px 10px;
+        }
+
+        label.check {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: .95rem
+        }
+
+        input[type=checkbox] {
+            width: 18px;
+            height: 18px;
+            accent-color: var(--luz)
+        }
+
+        select:focus-visible,
+        input:focus-visible,
+        button:focus-visible {
+            outline: 3px solid var(--luz);
+            outline-offset: 2px
+        }
+
+        .acciones {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-top: 28px
+        }
+
+        button {
+            font: inherit;
+            font-weight: 700;
+            border-radius: 10px;
+            padding: 12px 20px;
+            cursor: pointer;
+            border: 2px solid var(--tinta);
+            background: var(--tinta);
+            color: var(--hoja);
+        }
+
+        button.sec {
+            background: transparent;
+            color: var(--tinta)
+        }
+
+        button:disabled {
+            opacity: .45;
+            cursor: not-allowed
+        }
+
+        h2 {
+            font-size: 1.25rem;
+            margin: 40px 0 12px
+        }
+
+        ul.lista {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            border-top: 1px solid var(--linea)
+        }
+
+        ul.lista li {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 12px 2px;
+            border-bottom: 1px solid var(--linea);
+            font-size: .95rem;
+        }
+
+        .nombre {
+            overflow-wrap: anywhere
+        }
+
+        .estado {
+            color: var(--gris);
+            white-space: nowrap;
+            font-size: .9rem
+        }
+
+        .estado.ok {
+            color: var(--ok)
+        }
+
+        .estado.error {
+            color: var(--error)
+        }
+
+        a.descarga {
+            color: var(--luz);
+            font-weight: 700;
+            white-space: nowrap
+        }
+
+        .nota {
+            color: var(--gris);
+            font-size: .88rem;
+            margin-top: 40px;
+            max-width: 62ch
+        }
+
+        .vacio {
+            color: var(--gris);
+            font-size: .95rem;
+            padding: 12px 2px
+        }
+    </style>
+</head>
+
+<body>
+    <main>
+        <h1>Escáner PDF</h1>
+        <p class="intro">Convierte tus PDF en PDF con aspecto escaneado: escala de grises, contraste de tóner, leve
+            inclinación y grano de papel. Todo se procesa en tu navegador; los archivos no se suben a ningún servidor.
+        </p>
+
+        <div class="cama" id="cama" tabindex="0" role="button" aria-label="Seleccionar PDF o ZIP">
+            <div class="barra-luz"></div>
+            <strong>Arrastra aquí tus PDF o ZIP</strong>
+            <span>o haz clic para elegirlos · puedes mezclar varios PDF y varios ZIP</span>
+            <input type="file" id="entrada" multiple
+                accept=".pdf,.zip,application/pdf,application/zip,application/x-zip-compressed">
+        </div>
+
+        <fieldset>
+            <legend>Ajustes del escaneo</legend>
+            <label class="campo">Modo
+                <select id="modo">
+                    <option value="grises">Escala de grises (oficina)</option>
+                    <option value="binario">Blanco y negro (fotocopia)</option>
+                </select>
+            </label>
+            <label class="campo">Resolución (DPI)
+                <input type="number" id="dpi" value="150" min="72" max="400" step="1">
+            </label>
+            <label class="check"><input type="checkbox" id="inclinacion" checked> Micro-inclinación</label>
+            <label class="check"><input type="checkbox" id="ruido" checked> Grano de papel</label>
+        </fieldset>
+
+        <div class="acciones">
+            <button id="btnEscanear" disabled>Escanear archivos</button>
+            <button id="btnLimpiar" class="sec" disabled>Vaciar lista</button>
+            <button id="btnTodos" class="sec" hidden>Descargar todos los PDF (ZIP)</button>
+        </div>
+
+        <h2>Archivos</h2>
+        <ul class="lista" id="lista">
+            <li class="vacio">Aún no has agregado archivos.</li>
+        </ul>
+
+        <p class="nota">Los ZIP se devuelven como un ZIP nuevo con la misma estructura de carpetas y los mismos nombres
+            de archivo. Los archivos que no son PDF dentro del ZIP se omiten. Los PDF protegidos con contraseña no se
+            pueden procesar.</p>
+    </main>
+
+    <!-- Librerías (builds UMD, versiones fijas) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script>
+        "use strict";
+
+        pdfjsLib.GlobalWorkerOptions.workerSrc =
+            "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+        const $ = (id) => document.getElementById(id);
+        const cama = $("cama"), entrada = $("entrada"), lista = $("lista");
+        const btnEscanear = $("btnEscanear"), btnLimpiar = $("btnLimpiar"), btnTodos = $("btnTodos");
+
+        let cola = [];            // [{file, li, estadoEl, resultado}]
+        let procesando = false;
+        let urlsCreadas = [];
+
+        // ---------------------------------------------------------------------------
+        // Utilidades
+        // ---------------------------------------------------------------------------
+        const esPdf = (n) => /\.pdf$/i.test(n);
+        const esZip = (n) => /\.zip$/i.test(n);
+        const pausa = () => new Promise((r) => setTimeout(r, 0));
+
+        // Ruido gaussiano (Box-Muller), equivalente a np.random.normal(0, sigma)
+        function gauss() {
+            let u = 0, v = 0;
+            while (u === 0) u = Math.random();
+            while (v === 0) v = Math.random();
+            return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+        }
+
+        function canvasABlob(canvas, tipo, calidad) {
+            return new Promise((res, rej) =>
+                canvas.toBlob((b) => (b ? res(b) : rej(new Error("No se pudo codificar la imagen"))), tipo, calidad)
+            );
+        }
+
+        function crearUrl(blob) {
+            const u = URL.createObjectURL(blob);
+            urlsCreadas.push(u);
+            return u;
+        }
+
+        function nombreBase(n) { return n.replace(/\.[^.]+$/, ""); }
+
+        // ---------------------------------------------------------------------------
+        // Efecto de escáner (traducción de aplicar_efecto_escaner)
+        // ---------------------------------------------------------------------------
+        function aplicarEfectoEscaner(origen, { modo, inclinacion, ruido }) {
+            const w = origen.width, h = origen.height;
+            const c = document.createElement("canvas");
+            c.width = w; c.height = h;
+            const ctx = c.getContext("2d", { willReadFrequently: true });
+
+            // Fondo blanco para rellenar las esquinas al rotar (fillcolor=255)
+            ctx.fillStyle = "#fff";
+            ctx.fillRect(0, 0, w, h);
+
+            // Micro-inclinación aleatoria entre -0.35° y +0.35°
+            if (inclinacion) {
+                const angulo = Math.random() * 0.7 - 0.35;
+                ctx.translate(w / 2, h / 2);
+                ctx.rotate((-angulo * Math.PI) / 180); // PIL rota antihorario con ángulo positivo
+                ctx.translate(-w / 2, -h / 2);
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = "high";
+            }
+            ctx.drawImage(origen, 0, 0);
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+            const imgData = ctx.getImageData(0, 0, w, h);
+            const d = imgData.data;
+            const n = w * h;
+            const gris = new Float32Array(n);
+
+            // Escala de grises (misma ponderación que PIL "L": 299/587/114)
+            for (let i = 0, p = 0; i < n; i++, p += 4) {
+                gris[i] = (d[p] * 299 + d[p + 1] * 587 + d[p + 2] * 114) / 1000;
+            }
+
+            if (modo === "binario") {
+                const umbral = 185;
+                for (let i = 0, p = 0; i < n; i++, p += 4) {
+                    const v = gris[i] < umbral ? 0 : 255;
+                    d[p] = d[p + 1] = d[p + 2] = v; d[p + 3] = 255;
+                }
+            } else {
+                // Niveles: mapear [30, 230] -> [0, 255], ruido opcional, recorte y truncado a entero
+                const u8 = new Uint8Array(n);
+                let suma = 0;
+                for (let i = 0; i < n; i++) {
+                    let v = (gris[i] - 30) * (255 / 200);
+                    if (v < 0) v = 0; else if (v > 255) v = 255;
+                    if (ruido) {
+                        v += gauss() * 1.8;
+                        if (v < 0) v = 0; else if (v > 255) v = 255;
+                    }
+                    const e = Math.floor(v);
+                    u8[i] = e;
+                    suma += e;
+                }
+                // Refuerzo de contraste 1.25 alrededor de la media (como ImageEnhance.Contrast)
+                const media = Math.floor(suma / n + 0.5);
+                const factor = 1.25;
+                for (let i = 0, p = 0; i < n; i++, p += 4) {
+                    let v = media + factor * (u8[i] - media);
+                    if (v < 0) v = 0; else if (v > 255) v = 255;
+                    d[p] = d[p + 1] = d[p + 2] = v; d[p + 3] = 255;
+                }
+            }
+
+            ctx.putImageData(imgData, 0, 0);
+            return c;
+        }
+
+        // ---------------------------------------------------------------------------
+        // PDF -> PDF escaneado (traducción de convertir_pdf_a_escaneado)
+        // ---------------------------------------------------------------------------
+        async function escanearPdf(bytes, opciones, alAvanzar) {
+            const tarea = pdfjsLib.getDocument({ data: bytes });
+            const pdf = await tarea.promise;
+            const salida = await PDFLib.PDFDocument.create();
+            const escala = opciones.dpi / 72; // 72 puntos por pulgada en PDF
+
+            try {
+                for (let i = 1; i <= pdf.numPages; i++) {
+                    const pagina = await pdf.getPage(i);
+                    const vpPuntos = pagina.getViewport({ scale: 1 });
+                    const vp = pagina.getViewport({ scale: escala });
+
+                    const lienzo = document.createElement("canvas");
+                    lienzo.width = Math.ceil(vp.width);
+                    lienzo.height = Math.ceil(vp.height);
+                    const ctx = lienzo.getContext("2d");
+                    ctx.fillStyle = "#fff";
+                    ctx.fillRect(0, 0, lienzo.width, lienzo.height);
+                    await pagina.render({ canvasContext: ctx, viewport: vp }).promise;
+
+                    const escaneada = aplicarEfectoEscaner(lienzo, opciones);
+                    const jpgBlob = await canvasABlob(escaneada, "image/jpeg", 0.85);
+                    const jpgBytes = new Uint8Array(await jpgBlob.arrayBuffer());
+
+                    const imagen = await salida.embedJpg(jpgBytes);
+                    const nueva = salida.addPage([vpPuntos.width, vpPuntos.height]);
+                    nueva.drawImage(imagen, { x: 0, y: 0, width: vpPuntos.width, height: vpPuntos.height });
+
+                    // Liberar memoria
+                    pagina.cleanup();
+                    lienzo.width = lienzo.height = 0;
+                    escaneada.width = escaneada.height = 0;
+
+                    alAvanzar(i, pdf.numPages);
+                    await pausa(); // dejar respirar la interfaz
+                }
+            } finally {
+                await pdf.destroy();
+            }
+            return await salida.save();
+        }
+
+        // ---------------------------------------------------------------------------
+        // Cola e interfaz
+        // ---------------------------------------------------------------------------
+        function renderVacio() {
+            if (cola.length === 0) lista.innerHTML = '<li class="vacio">Aún no has agregado archivos.</li>';
+        }
+
+        function agregarArchivos(archivos) {
+            if (procesando) return;
+            const validos = [...archivos].filter((f) => esPdf(f.name) || esZip(f.name));
+            if (validos.length === 0) return;
+            if (cola.length === 0) lista.innerHTML = "";
+
+            for (const file of validos) {
+                const li = document.createElement("li");
+                const nombre = document.createElement("span");
+                nombre.className = "nombre";
+                nombre.textContent = file.name;
+                const estado = document.createElement("span");
+                estado.className = "estado";
+                estado.textContent = esZip(file.name) ? "ZIP en espera" : "En espera";
+                li.append(nombre, estado);
+                lista.append(li);
+                cola.push({ file, li, estadoEl: estado, resultado: null });
+            }
+            actualizarBotones();
+        }
+
+        function actualizarBotones() {
+            const pendientes = cola.some((j) => !j.resultado);
+            btnEscanear.disabled = procesando || !pendientes;
+            btnLimpiar.disabled = procesando || cola.length === 0;
+            const pdfsListos = cola.filter((j) => j.resultado && j.resultado.tipo === "pdf");
+            btnTodos.hidden = pdfsListos.length < 2;
+            btnTodos.disabled = procesando;
+        }
+
+        function ponerEstado(job, texto, clase = "") {
+            job.estadoEl.textContent = texto;
+            job.estadoEl.className = "estado" + (clase ? " " + clase : "");
+        }
+
+        function ponerDescarga(job, blob, nombreArchivo, textoEstado) {
+            job.estadoEl.remove();
+            const cont = document.createElement("span");
+            cont.style.display = "flex"; cont.style.gap = "12px"; cont.style.alignItems = "center";
+            const est = document.createElement("span");
+            est.className = "estado ok";
+            est.textContent = textoEstado;
+            const a = document.createElement("a");
+            a.className = "descarga";
+            a.href = crearUrl(blob);
+            a.download = nombreArchivo;
+            a.textContent = "Descargar";
+            cont.append(est, a);
+            job.li.append(cont);
+        }
+
+        function leerOpciones() {
+            let dpi = parseInt($("dpi").value, 10);
+            if (!Number.isFinite(dpi)) dpi = 150;
+            dpi = Math.min(400, Math.max(72, dpi));
+            $("dpi").value = dpi;
+            return {
+                dpi,
+                modo: $("modo").value,
+                inclinacion: $("inclinacion").checked,
+                ruido: $("ruido").checked,
+            };
+        }
+
+        async function procesarPdfSuelto(job, opciones) {
+            const bytes = new Uint8Array(await job.file.arrayBuffer());
+            const out = await escanearPdf(bytes, opciones, (i, t) => ponerEstado(job, `Página ${i}/${t}`));
+            const blob = new Blob([out], { type: "application/pdf" });
+            job.resultado = { tipo: "pdf", blob, nombre: job.file.name };
+            ponerDescarga(job, blob, job.file.name, `Listo · ${(blob.size / 1024).toFixed(0)} KB`);
+        }
+
+        async function procesarZip(job, opciones) {
+            ponerEstado(job, "Leyendo ZIP…");
+            const zip = await JSZip.loadAsync(job.file);
+            const entradas = [];
+            zip.forEach((ruta, entrada) => {
+                const base = ruta.split("/").pop();
+                if (entrada.dir) return;
+                if (ruta.startsWith("__MACOSX/") || base.startsWith("._")) return;
+                if (!esPdf(base)) return;
+                entradas.push({ ruta, entrada });
+            });
+            entradas.sort((a, b) => a.ruta.localeCompare(b.ruta));
+
+            if (entradas.length === 0) {
+                ponerEstado(job, "El ZIP no contiene PDF", "error");
+                job.resultado = { tipo: "vacio" };
+                return;
+            }
+
+            const zipSalida = new JSZip();
+            let ok = 0, fallos = 0;
+            for (let k = 0; k < entradas.length; k++) {
+                const { ruta, entrada } = entradas[k];
+                try {
+                    const datos = await entrada.async("uint8array");
+                    const out = await escanearPdf(datos, opciones, (i, t) =>
+                        ponerEstado(job, `PDF ${k + 1}/${entradas.length} · pág. ${i}/${t}`)
+                    );
+                    zipSalida.file(ruta, out);
+                    ok++;
+                } catch (e) {
+                    console.error("Error en", ruta, e);
+                    fallos++;
+                }
+            }
+
+            if (ok === 0) {
+                ponerEstado(job, "No se pudo procesar ningún PDF del ZIP", "error");
+                job.resultado = { tipo: "vacio" };
+                return;
+            }
+
+            ponerEstado(job, "Empaquetando ZIP…");
+            const blob = await zipSalida.generateAsync({ type: "blob" });
+            const nombre = nombreBase(job.file.name) + "_escaneado.zip";
+            job.resultado = { tipo: "zip", blob, nombre };
+            const texto = fallos ? `${ok} PDF listos · ${fallos} con error` : `${ok} PDF listos`;
+            ponerDescarga(job, blob, nombre, texto);
+        }
+
+        async function escanearTodo() {
+            if (procesando) return;
+            procesando = true;
+            cama.classList.add("escaneando");
+            actualizarBotones();
+            const opciones = leerOpciones();
+
+            for (const job of cola) {
+                if (job.resultado) continue;
+                try {
+                    if (esZip(job.file.name)) await procesarZip(job, opciones);
+                    else await procesarPdfSuelto(job, opciones);
+                } catch (e) {
+                    console.error(job.file.name, e);
+                    const msg = e && e.name === "PasswordException"
+                        ? "Protegido con contraseña"
+                        : "Error: no se pudo leer el archivo";
+                    ponerEstado(job, msg, "error");
+                    job.resultado = { tipo: "error" };
+                }
+            }
+
+            procesando = false;
+            cama.classList.remove("escaneando");
+            actualizarBotones();
+        }
+
+        async function descargarTodos() {
+            const pdfs = cola.filter((j) => j.resultado && j.resultado.tipo === "pdf");
+            if (pdfs.length === 0) return;
+            btnTodos.disabled = true;
+            const zip = new JSZip();
+            const usados = new Set();
+            for (const j of pdfs) {
+                let nombre = j.resultado.nombre, n = 2;
+                while (usados.has(nombre.toLowerCase())) nombre = `${nombreBase(j.resultado.nombre)} (${n++}).pdf`;
+                usados.add(nombre.toLowerCase());
+                zip.file(nombre, j.resultado.blob);
+            }
+            const blob = await zip.generateAsync({ type: "blob" });
+            const a = document.createElement("a");
+            a.href = crearUrl(blob);
+            a.download = "pdfs_escaneados.zip";
+            document.body.append(a);
+            a.click();
+            a.remove();
+            btnTodos.disabled = false;
+        }
+
+        function limpiar() {
+            if (procesando) return;
+            urlsCreadas.forEach((u) => URL.revokeObjectURL(u));
+            urlsCreadas = [];
+            cola = [];
+            lista.innerHTML = "";
+            renderVacio();
+            actualizarBotones();
+        }
+
+        // ---------------------------------------------------------------------------
+        // Eventos
+        // ---------------------------------------------------------------------------
+        cama.addEventListener("click", () => !procesando && entrada.click());
+        cama.addEventListener("keydown", (e) => {
+            if ((e.key === "Enter" || e.key === " ") && !procesando) { e.preventDefault(); entrada.click(); }
+        });
+        entrada.addEventListener("change", () => { agregarArchivos(entrada.files); entrada.value = ""; });
+
+        ["dragenter", "dragover"].forEach((ev) =>
+            cama.addEventListener(ev, (e) => { e.preventDefault(); cama.classList.add("arrastrando"); })
+        );
+        ["dragleave", "drop"].forEach((ev) =>
+            cama.addEventListener(ev, (e) => { e.preventDefault(); cama.classList.remove("arrastrando"); })
+        );
+        cama.addEventListener("drop", (e) => agregarArchivos(e.dataTransfer.files));
+
+        btnEscanear.addEventListener("click", escanearTodo);
+        btnLimpiar.addEventListener("click", limpiar);
+        btnTodos.addEventListener("click", descargarTodos);
+    </script>
+</body>
+
+</html>
