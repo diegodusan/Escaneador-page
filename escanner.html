@@ -11,13 +11,11 @@
     <style>
         :root {
             --vidrio: #E6ECEF;
-            /* fondo: vidrio del escáner */
             --hoja: #FFFFFF;
             --tinta: #1B2328;
             --gris: #5F6B72;
             --linea: #C9D3D8;
             --luz: #1E9CBB;
-            /* luz de escaneo */
             --ok: #2E7D4F;
             --error: #B3261E;
             box-sizing: border-box;
@@ -77,7 +75,6 @@
             margin: 0 0 32px
         }
 
-        /* Zona de carga: la "cama" del escáner */
         .cama {
             position: relative;
             overflow: hidden;
@@ -266,7 +263,9 @@
         }
 
         .estado.error {
-            color: var(--error)
+            color: var(--error);
+            white-space: normal;
+            text-align: right
         }
 
         a.descarga {
@@ -287,22 +286,40 @@
             font-size: .95rem;
             padding: 12px 2px
         }
+
+        /* Contenedor invisible donde se maqueta el Word antes de fotografiarlo */
+        .docx-host {
+            position: absolute;
+            left: 0;
+            top: 0;
+            z-index: -1;
+            opacity: 0;
+            pointer-events: none;
+            background: #fff;
+            color: #000;
+            width: max-content;
+        }
+
+        .docx-host section.docx {
+            margin: 0 0 24px 0 !important;
+            box-shadow: none !important
+        }
     </style>
 </head>
 
 <body>
     <main>
         <h1>Escáner PDF</h1>
-        <p class="intro">Convierte tus PDF en PDF con aspecto escaneado: escala de grises, contraste de tóner, leve
-            inclinación y grano de papel. Todo se procesa en tu navegador; los archivos no se suben a ningún servidor.
-        </p>
+        <p class="intro">Convierte tus PDF y documentos Word en PDF con aspecto escaneado: escala de grises, contraste
+            de tóner, leve inclinación y grano de papel. Todo se procesa en tu navegador; los archivos no se suben a
+            ningún servidor.</p>
 
-        <div class="cama" id="cama" tabindex="0" role="button" aria-label="Seleccionar PDF o ZIP">
+        <div class="cama" id="cama" tabindex="0" role="button" aria-label="Seleccionar PDF, Word o ZIP">
             <div class="barra-luz"></div>
-            <strong>Arrastra aquí tus PDF o ZIP</strong>
-            <span>o haz clic para elegirlos · puedes mezclar varios PDF y varios ZIP</span>
+            <strong>Arrastra aquí tus PDF, Word (.docx) o ZIP</strong>
+            <span>o haz clic para elegirlos · puedes mezclar varios a la vez</span>
             <input type="file" id="entrada" multiple
-                accept=".pdf,.zip,application/pdf,application/zip,application/x-zip-compressed">
+                accept=".pdf,.docx,.doc,.zip,application/pdf,application/zip,application/x-zip-compressed,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword">
         </div>
 
         <fieldset>
@@ -331,15 +348,18 @@
             <li class="vacio">Aún no has agregado archivos.</li>
         </ul>
 
-        <p class="nota">Los ZIP se devuelven como un ZIP nuevo con la misma estructura de carpetas y los mismos nombres
-            de archivo. Los archivos que no son PDF dentro del ZIP se omiten. Los PDF protegidos con contraseña no se
-            pueden procesar.</p>
+        <p class="nota">Los Word se devuelven como PDF con el mismo nombre. Los ZIP se devuelven como un ZIP nuevo con
+            la misma estructura de carpetas; dentro, cada .docx se convierte en .pdf. El formato antiguo .doc no se
+            puede leer en el navegador: ábrelo en Word y guárdalo como .docx. La maquetación del Word se reconstruye en
+            el navegador y puede diferir de la de Microsoft Word (fuentes, saltos de página, cuadros de texto).</p>
     </main>
 
-    <!-- Librerías (builds UMD, versiones fijas) -->
+    <!-- Librerías (builds UMD, versiones fijas). JSZip debe ir antes de docx-preview. -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/docx-preview@0.3.3/dist/docx-preview.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script>
         "use strict";
 
@@ -350,7 +370,7 @@
         const cama = $("cama"), entrada = $("entrada"), lista = $("lista");
         const btnEscanear = $("btnEscanear"), btnLimpiar = $("btnLimpiar"), btnTodos = $("btnTodos");
 
-        let cola = [];            // [{file, li, estadoEl, resultado}]
+        let cola = [];
         let procesando = false;
         let urlsCreadas = [];
 
@@ -358,10 +378,14 @@
         // Utilidades
         // ---------------------------------------------------------------------------
         const esPdf = (n) => /\.pdf$/i.test(n);
+        const esDocx = (n) => /\.docx$/i.test(n);
+        const esDoc = (n) => /\.doc$/i.test(n);
         const esZip = (n) => /\.zip$/i.test(n);
+        const esConvertible = (n) => esPdf(n) || esDocx(n);
         const pausa = () => new Promise((r) => setTimeout(r, 0));
+        const nombreBase = (n) => n.replace(/\.[^./]+$/, "");
+        const aPdf = (n) => nombreBase(n) + ".pdf";
 
-        // Ruido gaussiano (Box-Muller), equivalente a np.random.normal(0, sigma)
         function gauss() {
             let u = 0, v = 0;
             while (u === 0) u = Math.random();
@@ -381,8 +405,6 @@
             return u;
         }
 
-        function nombreBase(n) { return n.replace(/\.[^.]+$/, ""); }
-
         // ---------------------------------------------------------------------------
         // Efecto de escáner (traducción de aplicar_efecto_escaner)
         // ---------------------------------------------------------------------------
@@ -392,15 +414,13 @@
             c.width = w; c.height = h;
             const ctx = c.getContext("2d", { willReadFrequently: true });
 
-            // Fondo blanco para rellenar las esquinas al rotar (fillcolor=255)
             ctx.fillStyle = "#fff";
             ctx.fillRect(0, 0, w, h);
 
-            // Micro-inclinación aleatoria entre -0.35° y +0.35°
             if (inclinacion) {
                 const angulo = Math.random() * 0.7 - 0.35;
                 ctx.translate(w / 2, h / 2);
-                ctx.rotate((-angulo * Math.PI) / 180); // PIL rota antihorario con ángulo positivo
+                ctx.rotate((-angulo * Math.PI) / 180);
                 ctx.translate(-w / 2, -h / 2);
                 ctx.imageSmoothingEnabled = true;
                 ctx.imageSmoothingQuality = "high";
@@ -413,7 +433,6 @@
             const n = w * h;
             const gris = new Float32Array(n);
 
-            // Escala de grises (misma ponderación que PIL "L": 299/587/114)
             for (let i = 0, p = 0; i < n; i++, p += 4) {
                 gris[i] = (d[p] * 299 + d[p + 1] * 587 + d[p + 2] * 114) / 1000;
             }
@@ -425,7 +444,6 @@
                     d[p] = d[p + 1] = d[p + 2] = v; d[p + 3] = 255;
                 }
             } else {
-                // Niveles: mapear [30, 230] -> [0, 255], ruido opcional, recorte y truncado a entero
                 const u8 = new Uint8Array(n);
                 let suma = 0;
                 for (let i = 0; i < n; i++) {
@@ -439,7 +457,6 @@
                     u8[i] = e;
                     suma += e;
                 }
-                // Refuerzo de contraste 1.25 alrededor de la media (como ImageEnhance.Contrast)
                 const media = Math.floor(suma / n + 0.5);
                 const factor = 1.25;
                 for (let i = 0, p = 0; i < n; i++, p += 4) {
@@ -454,20 +471,18 @@
         }
 
         // ---------------------------------------------------------------------------
-        // PDF -> PDF escaneado (traducción de convertir_pdf_a_escaneado)
+        // Fuentes de páginas: cada una entrega {lienzo, ancho, alto (en puntos), indice, total}
         // ---------------------------------------------------------------------------
-        async function escanearPdf(bytes, opciones, alAvanzar) {
-            const tarea = pdfjsLib.getDocument({ data: bytes });
-            const pdf = await tarea.promise;
-            const salida = await PDFLib.PDFDocument.create();
-            const escala = opciones.dpi / 72; // 72 puntos por pulgada en PDF
 
+        // PDF -> páginas (pdf.js)
+        async function* paginasDePdf(bytes, dpi) {
+            const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+            const escala = dpi / 72;
             try {
                 for (let i = 1; i <= pdf.numPages; i++) {
                     const pagina = await pdf.getPage(i);
                     const vpPuntos = pagina.getViewport({ scale: 1 });
                     const vp = pagina.getViewport({ scale: escala });
-
                     const lienzo = document.createElement("canvas");
                     lienzo.width = Math.ceil(vp.width);
                     lienzo.height = Math.ceil(vp.height);
@@ -475,27 +490,128 @@
                     ctx.fillStyle = "#fff";
                     ctx.fillRect(0, 0, lienzo.width, lienzo.height);
                     await pagina.render({ canvasContext: ctx, viewport: vp }).promise;
-
-                    const escaneada = aplicarEfectoEscaner(lienzo, opciones);
-                    const jpgBlob = await canvasABlob(escaneada, "image/jpeg", 0.85);
-                    const jpgBytes = new Uint8Array(await jpgBlob.arrayBuffer());
-
-                    const imagen = await salida.embedJpg(jpgBytes);
-                    const nueva = salida.addPage([vpPuntos.width, vpPuntos.height]);
-                    nueva.drawImage(imagen, { x: 0, y: 0, width: vpPuntos.width, height: vpPuntos.height });
-
-                    // Liberar memoria
                     pagina.cleanup();
-                    lienzo.width = lienzo.height = 0;
-                    escaneada.width = escaneada.height = 0;
-
-                    alAvanzar(i, pdf.numPages);
-                    await pausa(); // dejar respirar la interfaz
+                    yield { lienzo, ancho: vpPuntos.width, alto: vpPuntos.height, indice: i, total: pdf.numPages };
                 }
             } finally {
                 await pdf.destroy();
             }
+        }
+
+        // Mide una longitud CSS (p. ej. "792pt") en píxeles CSS
+        function medirLongitud(valor, dentroDe) {
+            if (!valor) return 0;
+            const sonda = document.createElement("div");
+            sonda.style.cssText = "position:absolute;left:0;top:0;width:1px;visibility:hidden";
+            sonda.style.height = valor;
+            dentroDe.append(sonda);
+            const h = sonda.getBoundingClientRect().height;
+            sonda.remove();
+            return h;
+        }
+
+        // DOCX -> páginas (docx-preview maqueta en HTML, html2canvas lo fotografía)
+        async function* paginasDeDocx(bytes, dpi) {
+            const host = document.createElement("div");
+            host.className = "docx-host";
+            document.body.append(host);
+            try {
+                await docx.renderAsync(bytes, host, host, {
+                    className: "docx",
+                    inWrapper: false,
+                    ignoreWidth: false,
+                    ignoreHeight: false,
+                    ignoreFonts: false,
+                    breakPages: true,
+                    ignoreLastRenderedPageBreak: false, // usa los saltos de página que guardó Word
+                    renderHeaders: true,
+                    renderFooters: true,
+                    renderFootnotes: true,
+                    renderEndnotes: true,
+                    useBase64URL: true,
+                });
+
+                // Esperar fuentes e imágenes antes de fotografiar
+                if (document.fonts && document.fonts.ready) await document.fonts.ready;
+                await Promise.all([...host.querySelectorAll("img")].map((img) =>
+                    img.complete ? null : new Promise((r) => { img.onload = img.onerror = r; })
+                ));
+
+                const secciones = [...host.querySelectorAll("section.docx")];
+                if (secciones.length === 0) throw new Error("El documento no generó páginas");
+
+                // Calcular cuántas páginas físicas sale de cada sección
+                const plan = secciones.map((sec) => {
+                    const ancho = sec.getBoundingClientRect().width;
+                    const altoReal = sec.getBoundingClientRect().height;
+                    let altoPagina = medirLongitud(sec.style.minHeight || sec.style.height, host);
+                    if (!altoPagina) altoPagina = ancho * (11 / 8.5); // respaldo: tamaño carta
+                    const n = Math.max(1, Math.ceil(altoReal / altoPagina - 0.02));
+                    return { sec, ancho, altoPagina, n };
+                });
+                const total = plan.reduce((s, p) => s + p.n, 0);
+
+                const escala = dpi / 96; // 96 px CSS por pulgada
+                let indice = 0;
+                for (const { sec, ancho, altoPagina, n } of plan) {
+                    const captura = await html2canvas(sec, {
+                        scale: escala,
+                        backgroundColor: "#ffffff",
+                        useCORS: true,
+                        logging: false,
+                        onclone: (docClon) => {
+                            const h = docClon.querySelector(".docx-host");
+                            if (h) h.style.opacity = "1";
+                        },
+                    });
+
+                    const altoPx = Math.round(altoPagina * escala);
+                    for (let k = 0; k < n; k++) {
+                        const lienzo = document.createElement("canvas");
+                        lienzo.width = captura.width;
+                        lienzo.height = altoPx;
+                        const ctx = lienzo.getContext("2d");
+                        ctx.fillStyle = "#fff";
+                        ctx.fillRect(0, 0, lienzo.width, lienzo.height);
+                        const y0 = k * altoPx;
+                        const alto = Math.min(altoPx, captura.height - y0);
+                        if (alto > 0) ctx.drawImage(captura, 0, y0, captura.width, alto, 0, 0, captura.width, alto);
+                        indice++;
+                        // 1 px CSS = 0.75 pt
+                        yield { lienzo, ancho: ancho * 0.75, alto: altoPagina * 0.75, indice, total };
+                    }
+                    captura.width = captura.height = 0;
+                }
+            } finally {
+                host.remove();
+            }
+        }
+
+        // ---------------------------------------------------------------------------
+        // Ensamblado del PDF escaneado (común a PDF y Word)
+        // ---------------------------------------------------------------------------
+        async function ensamblarPdf(paginas, opciones, alAvanzar) {
+            const salida = await PDFLib.PDFDocument.create();
+            for await (const p of paginas) {
+                const escaneada = aplicarEfectoEscaner(p.lienzo, opciones);
+                const jpgBlob = await canvasABlob(escaneada, "image/jpeg", 0.85);
+                const jpgBytes = new Uint8Array(await jpgBlob.arrayBuffer());
+                const imagen = await salida.embedJpg(jpgBytes);
+                const nueva = salida.addPage([p.ancho, p.alto]);
+                nueva.drawImage(imagen, { x: 0, y: 0, width: p.ancho, height: p.alto });
+
+                p.lienzo.width = p.lienzo.height = 0;
+                escaneada.width = escaneada.height = 0;
+                alAvanzar(p.indice, p.total);
+                await pausa();
+            }
+            if (salida.getPageCount() === 0) throw new Error("Sin páginas");
             return await salida.save();
+        }
+
+        function escanearArchivo(nombre, bytes, opciones, alAvanzar) {
+            const fuente = esDocx(nombre) ? paginasDeDocx(bytes, opciones.dpi) : paginasDePdf(bytes, opciones.dpi);
+            return ensamblarPdf(fuente, opciones, alAvanzar);
         }
 
         // ---------------------------------------------------------------------------
@@ -507,7 +623,7 @@
 
         function agregarArchivos(archivos) {
             if (procesando) return;
-            const validos = [...archivos].filter((f) => esPdf(f.name) || esZip(f.name));
+            const validos = [...archivos].filter((f) => esConvertible(f.name) || esZip(f.name) || esDoc(f.name));
             if (validos.length === 0) return;
             if (cola.length === 0) lista.innerHTML = "";
 
@@ -518,10 +634,17 @@
                 nombre.textContent = file.name;
                 const estado = document.createElement("span");
                 estado.className = "estado";
-                estado.textContent = esZip(file.name) ? "ZIP en espera" : "En espera";
                 li.append(nombre, estado);
                 lista.append(li);
-                cola.push({ file, li, estadoEl: estado, resultado: null });
+                const job = { file, li, estadoEl: estado, resultado: null };
+                cola.push(job);
+
+                if (esDoc(file.name)) {
+                    ponerEstado(job, "Formato .doc no compatible: guárdalo como .docx", "error");
+                    job.resultado = { tipo: "error" };
+                } else {
+                    ponerEstado(job, esZip(file.name) ? "ZIP en espera" : "En espera");
+                }
             }
             actualizarBotones();
         }
@@ -543,7 +666,7 @@
         function ponerDescarga(job, blob, nombreArchivo, textoEstado) {
             job.estadoEl.remove();
             const cont = document.createElement("span");
-            cont.style.display = "flex"; cont.style.gap = "12px"; cont.style.alignItems = "center";
+            cont.style.cssText = "display:flex;gap:12px;align-items:center";
             const est = document.createElement("span");
             est.className = "estado ok";
             est.textContent = textoEstado;
@@ -561,51 +684,55 @@
             if (!Number.isFinite(dpi)) dpi = 150;
             dpi = Math.min(400, Math.max(72, dpi));
             $("dpi").value = dpi;
-            return {
-                dpi,
-                modo: $("modo").value,
-                inclinacion: $("inclinacion").checked,
-                ruido: $("ruido").checked,
-            };
+            return { dpi, modo: $("modo").value, inclinacion: $("inclinacion").checked, ruido: $("ruido").checked };
         }
 
-        async function procesarPdfSuelto(job, opciones) {
+        async function procesarSuelto(job, opciones) {
             const bytes = new Uint8Array(await job.file.arrayBuffer());
-            const out = await escanearPdf(bytes, opciones, (i, t) => ponerEstado(job, `Página ${i}/${t}`));
+            if (esDocx(job.file.name)) ponerEstado(job, "Maquetando Word…");
+            const out = await escanearArchivo(job.file.name, bytes, opciones,
+                (i, t) => ponerEstado(job, `Página ${i}/${t}`));
             const blob = new Blob([out], { type: "application/pdf" });
-            job.resultado = { tipo: "pdf", blob, nombre: job.file.name };
-            ponerDescarga(job, blob, job.file.name, `Listo · ${(blob.size / 1024).toFixed(0)} KB`);
+            const nombre = aPdf(job.file.name);
+            job.resultado = { tipo: "pdf", blob, nombre };
+            ponerDescarga(job, blob, nombre, `Listo · ${(blob.size / 1024).toFixed(0)} KB`);
         }
 
         async function procesarZip(job, opciones) {
             ponerEstado(job, "Leyendo ZIP…");
             const zip = await JSZip.loadAsync(job.file);
             const entradas = [];
+            let docsViejos = 0;
             zip.forEach((ruta, entrada) => {
                 const base = ruta.split("/").pop();
                 if (entrada.dir) return;
-                if (ruta.startsWith("__MACOSX/") || base.startsWith("._")) return;
-                if (!esPdf(base)) return;
+                if (ruta.startsWith("__MACOSX/") || base.startsWith("._") || base.startsWith("~$")) return;
+                if (esDoc(base)) { docsViejos++; return; }
+                if (!esConvertible(base)) return;
                 entradas.push({ ruta, entrada });
             });
             entradas.sort((a, b) => a.ruta.localeCompare(b.ruta));
 
             if (entradas.length === 0) {
-                ponerEstado(job, "El ZIP no contiene PDF", "error");
+                ponerEstado(job, docsViejos ? "Solo contiene .doc (no compatibles)" : "El ZIP no contiene PDF ni Word", "error");
                 job.resultado = { tipo: "vacio" };
                 return;
             }
 
             const zipSalida = new JSZip();
+            const usados = new Set();
             let ok = 0, fallos = 0;
             for (let k = 0; k < entradas.length; k++) {
                 const { ruta, entrada } = entradas[k];
                 try {
                     const datos = await entrada.async("uint8array");
-                    const out = await escanearPdf(datos, opciones, (i, t) =>
-                        ponerEstado(job, `PDF ${k + 1}/${entradas.length} · pág. ${i}/${t}`)
-                    );
-                    zipSalida.file(ruta, out);
+                    const out = await escanearArchivo(ruta, datos, opciones, (i, t) =>
+                        ponerEstado(job, `Archivo ${k + 1}/${entradas.length} · pág. ${i}/${t}`));
+                    // Mismo nombre con extensión .pdf; si choca (p. ej. informe.docx e informe.pdf), se numera
+                    let destino = aPdf(ruta), n = 2;
+                    while (usados.has(destino.toLowerCase())) destino = `${nombreBase(ruta)} (${n++}).pdf`;
+                    usados.add(destino.toLowerCase());
+                    zipSalida.file(destino, out);
                     ok++;
                 } catch (e) {
                     console.error("Error en", ruta, e);
@@ -614,7 +741,7 @@
             }
 
             if (ok === 0) {
-                ponerEstado(job, "No se pudo procesar ningún PDF del ZIP", "error");
+                ponerEstado(job, "No se pudo procesar ningún archivo del ZIP", "error");
                 job.resultado = { tipo: "vacio" };
                 return;
             }
@@ -623,8 +750,10 @@
             const blob = await zipSalida.generateAsync({ type: "blob" });
             const nombre = nombreBase(job.file.name) + "_escaneado.zip";
             job.resultado = { tipo: "zip", blob, nombre };
-            const texto = fallos ? `${ok} PDF listos · ${fallos} con error` : `${ok} PDF listos`;
-            ponerDescarga(job, blob, nombre, texto);
+            const partes = [`${ok} listos`];
+            if (fallos) partes.push(`${fallos} con error`);
+            if (docsViejos) partes.push(`${docsViejos} .doc omitidos`);
+            ponerDescarga(job, blob, nombre, partes.join(" · "));
         }
 
         async function escanearTodo() {
@@ -638,7 +767,7 @@
                 if (job.resultado) continue;
                 try {
                     if (esZip(job.file.name)) await procesarZip(job, opciones);
-                    else await procesarPdfSuelto(job, opciones);
+                    else await procesarSuelto(job, opciones);
                 } catch (e) {
                     console.error(job.file.name, e);
                     const msg = e && e.name === "PasswordException"
@@ -696,11 +825,9 @@
         entrada.addEventListener("change", () => { agregarArchivos(entrada.files); entrada.value = ""; });
 
         ["dragenter", "dragover"].forEach((ev) =>
-            cama.addEventListener(ev, (e) => { e.preventDefault(); cama.classList.add("arrastrando"); })
-        );
+            cama.addEventListener(ev, (e) => { e.preventDefault(); cama.classList.add("arrastrando"); }));
         ["dragleave", "drop"].forEach((ev) =>
-            cama.addEventListener(ev, (e) => { e.preventDefault(); cama.classList.remove("arrastrando"); })
-        );
+            cama.addEventListener(ev, (e) => { e.preventDefault(); cama.classList.remove("arrastrando"); }));
         cama.addEventListener("drop", (e) => agregarArchivos(e.dataTransfer.files));
 
         btnEscanear.addEventListener("click", escanearTodo);
